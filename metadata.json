@@ -1,0 +1,5 @@
+{
+  "name": "RS7 Manual Simulator",
+  "description": "A realistic manual transmission driving simulator featuring an Audi RS7 style digital dashboard, physics-based engine logic, and a digital driving instructor.",
+  "requestFramePermissions": []
+}
