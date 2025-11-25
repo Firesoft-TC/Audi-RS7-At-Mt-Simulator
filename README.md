@@ -7,7 +7,8 @@
 
 1- Extract Project Downloaded zip file into a folder
 <br></br>
-2- Run cmd (command prompts)
+
+2- Run cmd (command prompts) and go to your folder path
 <br></br>
 
 3- type `npm install` 
