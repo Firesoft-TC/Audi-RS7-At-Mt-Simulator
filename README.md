@@ -4,15 +4,16 @@
 ## Run Locally
 
 **Prerequisites:**  Node.js
+<br></br>
 1-Extract project files into a folder
-   <br></br>
+<br></br>
 
 2- open cmd in your folder path
-   <br></br>
+<br></br>
 
 3. Install dependencies:
    `npm install`
-   <br></br>
+<br></br>
    
 4. Run the app:
    `npm run dev`
