@@ -9,7 +9,7 @@ interface ControlsProps {
   fuel: number;
   speed: number;
   laneActive: boolean;
-  isAutomatic: boolean;
+  transmissionMode: 'MT' | 'AT' | 'DCT' | 'CVT';
   onGearChange: (gear: number) => void;
   onPedalChange: (type: 'throttle' | 'brake' | 'clutch', value: number) => void;
   onIgnition: () => void;
@@ -21,8 +21,91 @@ interface ControlsProps {
   isEngineRunning: boolean;
 }
 
+// Reusable Pedal Component for precise Touch/Mouse control
+const Pedal: React.FC<{
+  type: 'throttle' | 'brake' | 'clutch';
+  value: number;
+  color: string;
+  label: string;
+  disabled?: boolean;
+  onChange: (type: 'throttle' | 'brake' | 'clutch', val: number) => void;
+}> = ({ type, value, color, label, disabled, onChange }) => {
+  const ref = useRef<HTMLDivElement>(null);
+
+  const calculateValue = (clientY: number) => {
+    if (!ref.current) return 0;
+    const rect = ref.current.getBoundingClientRect();
+    // Calculate percentage based on height. 
+    // Bottom of box is 0.0, Top of box is 1.0 (Visualizing "Pressing Forward")
+    let percentage = (rect.bottom - clientY) / rect.height;
+    return Math.max(0, Math.min(1, percentage));
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    if (disabled) return;
+    // Capture pointer to track movement even outside the element
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const newVal = calculateValue(e.clientY);
+    onChange(type, newVal);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    e.preventDefault();
+    if (disabled || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const newVal = calculateValue(e.clientY);
+    onChange(type, newVal);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+      e.preventDefault();
+      // Optional: Reset if needed, but for pedals we typically leave them where they are 
+      // or user lets go. Real pedals snap back, simulated ones might sticky or snap back depending on preference.
+      // Here we assume "foot off pedal" = 0, except maybe for throttle cruising. 
+      // For now, let's auto-return to 0 for simplicity if user lifts finger, mimicking a real spring.
+      if (!disabled) {
+          onChange(type, 0);
+      }
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+  };
+
+  // Determine colors based on type
+  const barColor = type === 'clutch' ? 'bg-blue-600' : type === 'brake' ? 'bg-red-600' : 'bg-green-500';
+  const textColor = type === 'clutch' ? 'text-blue-400' : type === 'brake' ? 'text-red-400' : 'text-green-400';
+  const borderColor = type === 'clutch' ? 'group-active:border-blue-500' : type === 'brake' ? 'group-active:border-red-500' : 'group-active:border-green-500';
+
+  return (
+    <div 
+      ref={ref}
+      className={`relative flex flex-col items-center h-full w-24 group select-none touch-none ${disabled ? 'opacity-20 grayscale pointer-events-none' : 'cursor-pointer'}`}
+      style={{ touchAction: 'none' }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerUp} // Safety release
+    >
+      <div className={`flex-1 w-full relative bg-gray-800 rounded-lg overflow-hidden border-2 border-gray-600 mb-2 transition-colors ${borderColor}`}>
+        {/* Fill Bar */}
+        <div 
+           className={`absolute bottom-0 w-full ${barColor} transition-transform duration-75 ease-out rounded-t-sm`}
+           style={{ height: '100%', transform: `translateY(${100 - (value * 100)}%)` }}
+        ></div>
+        
+        {/* Glossy Overlay */}
+        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent pointer-events-none"></div>
+      </div>
+      
+      {/* Numeric Display */}
+      <span className={`text-lg font-mono font-bold ${textColor}`}>{Math.round(value * 100)}%</span>
+      <span className={`text-xs font-bold text-gray-400 group-hover:text-white transition-colors`}>{label}</span>
+    </div>
+  );
+};
+
 const Controls: React.FC<ControlsProps> = ({ 
-  throttle, brake, clutch, gear, fuel, speed, laneActive, isAutomatic,
+  throttle, brake, clutch, gear, fuel, speed, laneActive, transmissionMode,
   onGearChange, onPedalChange, onIgnition, onRefuel, onHornStart, onHornStop, onToggleLaneAssist, onToggleTransmission,
   isEngineRunning 
 }) => {
@@ -31,57 +114,46 @@ const Controls: React.FC<ControlsProps> = ({
     onGearChange(g);
   };
 
+  const isAuto = transmissionMode !== 'MT';
+  
+  // Helper for gear button styling
+  const getGearBtnClass = (g: number) => {
+      const isActive = gear === g;
+      let base = "h-12 rounded font-bold border-2 transition-all flex items-center justify-center text-lg ";
+      if (isActive) {
+          if (g === 0) return base + "bg-green-900 border-green-500 text-white shadow-[0_0_10px_rgba(34,197,94,0.5)]";
+          if (g === -1) return base + "bg-red-900 border-red-500 text-white shadow-[0_0_10px_rgba(220,38,38,0.5)]";
+          return base + "bg-blue-900 border-blue-500 text-white shadow-[0_0_10px_rgba(59,130,246,0.5)]";
+      }
+      return base + "bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400 hover:text-white";
+  };
+
   return (
-    <div className="w-full max-w-4xl mx-auto mt-6 flex flex-col md:flex-row gap-8 items-end justify-center">
+    <div className="w-full max-w-4xl mx-auto mt-6 flex flex-col md:flex-row gap-8 items-end justify-center pb-8">
       
       {/* Shifter & Ignition */}
       <div className="bg-gray-900 p-6 rounded-2xl border border-gray-700 shadow-xl flex flex-col items-center w-full md:w-1/3">
         <h3 className="text-gray-400 mb-4 font-digital uppercase tracking-widest text-sm">Transmission</h3>
-        <div className={`grid grid-cols-3 gap-3 w-full max-w-[200px] transition-opacity duration-300 ${isAutomatic ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-          <button 
-             onClick={() => handleGearClick(-1)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === -1 ? 'bg-red-900 border-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             R
-          </button>
-          <div className="col-span-1"></div>
-          <button 
-             onClick={() => handleGearClick(1)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === 1 ? 'bg-red-900 border-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             1
-          </button>
-          
-          <button 
-             onClick={() => handleGearClick(2)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === 2 ? 'bg-red-900 border-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             2
-          </button>
-          <button 
-             onClick={() => handleGearClick(0)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === 0 ? 'bg-green-900 border-green-500 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             N
-          </button>
-          <button 
-             onClick={() => handleGearClick(3)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === 3 ? 'bg-red-900 border-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             3
-          </button>
+        
+        {/* Shifter Grid */}
+        <div className={`grid grid-cols-3 gap-2 w-full transition-opacity duration-300 ${isAuto ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+           {/* Row 1 */}
+           <button onClick={() => handleGearClick(1)} className={getGearBtnClass(1)}>1</button>
+           <button onClick={() => handleGearClick(2)} className={getGearBtnClass(2)}>2</button>
+           <button onClick={() => handleGearClick(3)} className={getGearBtnClass(3)}>3</button>
 
-          <button 
-             onClick={() => handleGearClick(4)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === 4 ? 'bg-red-900 border-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             4
-          </button>
-          <div className="col-span-1"></div>
-          <button 
-             onClick={() => handleGearClick(5)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === 5 ? 'bg-red-900 border-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             5
-          </button>
-           <button 
-             onClick={() => handleGearClick(6)}
-             className={`h-14 rounded font-bold border-2 transition-all ${gear === 6 ? 'bg-red-900 border-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
-             6
-          </button>
+           {/* Row 2 */}
+           <button onClick={() => handleGearClick(4)} className={getGearBtnClass(4)}>4</button>
+           <button onClick={() => handleGearClick(5)} className={getGearBtnClass(5)}>5</button>
+           <button onClick={() => handleGearClick(6)} className={getGearBtnClass(6)}>6</button>
+
+           {/* Row 3 */}
+           <button onClick={() => handleGearClick(7)} className={getGearBtnClass(7)}>7</button>
+           <button onClick={() => handleGearClick(8)} className={getGearBtnClass(8)}>8</button>
+           <button onClick={() => handleGearClick(-1)} className={getGearBtnClass(-1)}>R</button>
+           
+           {/* Row 4 */}
+           <button onClick={() => handleGearClick(0)} className={`col-span-3 ${getGearBtnClass(0)}`}>N</button>
         </div>
         
         <button 
@@ -98,6 +170,8 @@ const Controls: React.FC<ControlsProps> = ({
                 onMouseDown={onHornStart}
                 onMouseUp={onHornStop}
                 onMouseLeave={onHornStop}
+                onTouchStart={onHornStart}
+                onTouchEnd={onHornStop}
                 className="flex-1 bg-gray-800 border border-gray-600 text-gray-300 py-2 rounded hover:bg-gray-700 active:bg-white active:text-black transition-colors font-bold text-[10px]"
             >
                 HORN
@@ -112,9 +186,9 @@ const Controls: React.FC<ControlsProps> = ({
              {/* Auto Toggle */}
              <button 
                 onClick={onToggleTransmission}
-                className={`flex-1 border text-gray-300 py-2 rounded transition-colors font-bold text-[10px] ${isAutomatic ? 'bg-blue-900 border-blue-500 text-blue-100' : 'bg-gray-800 border-gray-600'}`}
+                className={`flex-1 border text-gray-300 py-2 rounded transition-colors font-bold text-[10px] ${transmissionMode !== 'MT' ? 'bg-blue-900 border-blue-500 text-blue-100' : 'bg-gray-800 border-gray-600'}`}
             >
-                {isAutomatic ? 'AUTO' : 'MANUAL'}
+                {transmissionMode}
             </button>
         </div>
         
@@ -131,61 +205,35 @@ const Controls: React.FC<ControlsProps> = ({
       {/* Pedals */}
       <div className="flex-1 bg-gray-900 p-6 rounded-2xl border border-gray-700 shadow-xl w-full">
          <h3 className="text-gray-400 mb-8 font-digital uppercase tracking-widest text-sm text-center">Pedals</h3>
-         <div className="flex justify-around items-end h-80 px-4 gap-4 select-none touch-none">
+         <div className="flex justify-around items-end h-80 px-4 gap-4">
             
             {/* Clutch */}
-            <div className={`flex flex-col items-center h-full w-24 group relative transition-opacity duration-300 ${isAutomatic ? 'opacity-40 pointer-events-none grayscale' : 'opacity-100'}`}>
-              <div className="flex-1 w-full relative bg-gray-800 rounded-lg overflow-hidden border border-gray-600 mb-2">
-                <div 
-                   className="absolute bottom-0 w-full bg-blue-600 transition-transform duration-75 ease-linear rounded-t-sm"
-                   style={{ height: '100%', transform: `translateY(${100 - (clutch * 100)}%)` }}
-                ></div>
-              </div>
-              <input 
-                 type="range" min="0" max="1" step="0.01" value={clutch}
-                 onChange={(e) => onPedalChange('clutch', parseFloat(e.target.value))}
-                 className="absolute inset-0 w-full h-[calc(100%-40px)] opacity-0 cursor-pointer z-10"
-                 style={{ touchAction: 'none' }}
-              />
-              <span className="text-lg font-mono text-blue-400 font-bold">{Math.round(clutch * 100)}%</span>
-              <span className="text-xs font-bold text-gray-400 group-hover:text-blue-400 transition-colors pointer-events-none">CLUTCH</span>
-            </div>
+            <Pedal 
+              type="clutch" 
+              value={clutch} 
+              color="bg-blue-600" 
+              label="CLUTCH"
+              disabled={isAuto} 
+              onChange={onPedalChange}
+            />
 
             {/* Brake */}
-            <div className="flex flex-col items-center h-full w-24 group relative">
-               <div className="flex-1 w-full relative bg-gray-800 rounded-lg overflow-hidden border border-gray-600 mb-2">
-                <div 
-                   className="absolute bottom-0 w-full bg-red-600 transition-transform duration-75 ease-linear rounded-t-sm"
-                   style={{ height: '100%', transform: `translateY(${100 - (brake * 100)}%)` }}
-                ></div>
-              </div>
-              <input 
-                 type="range" min="0" max="1" step="0.01" value={brake}
-                 onChange={(e) => onPedalChange('brake', parseFloat(e.target.value))}
-                 className="absolute inset-0 w-full h-[calc(100%-40px)] opacity-0 cursor-pointer z-10"
-                 style={{ touchAction: 'none' }}
-              />
-              <span className="text-lg font-mono text-red-400 font-bold">{Math.round(brake * 100)}%</span>
-              <span className="text-xs font-bold text-gray-400 group-hover:text-red-400 transition-colors pointer-events-none">BRAKE</span>
-            </div>
+            <Pedal 
+              type="brake" 
+              value={brake} 
+              color="bg-red-600" 
+              label="BRAKE"
+              onChange={onPedalChange}
+            />
 
             {/* Throttle */}
-            <div className="flex flex-col items-center h-full w-24 group relative">
-               <div className="flex-1 w-full relative bg-gray-800 rounded-lg overflow-hidden border border-gray-600 mb-2">
-                <div 
-                   className="absolute bottom-0 w-full bg-green-500 transition-transform duration-75 ease-linear rounded-t-sm"
-                   style={{ height: '100%', transform: `translateY(${100 - (throttle * 100)}%)` }}
-                ></div>
-              </div>
-              <input 
-                 type="range" min="0" max="1" step="0.01" value={throttle}
-                 onChange={(e) => onPedalChange('throttle', parseFloat(e.target.value))}
-                 className="absolute inset-0 w-full h-[calc(100%-40px)] opacity-0 cursor-pointer z-10"
-                 style={{ touchAction: 'none' }}
-              />
-              <span className="text-lg font-mono text-green-400 font-bold">{Math.round(throttle * 100)}%</span>
-              <span className="text-xs font-bold text-gray-400 group-hover:text-green-400 transition-colors pointer-events-none">GAS</span>
-            </div>
+            <Pedal 
+              type="throttle" 
+              value={throttle} 
+              color="bg-green-500" 
+              label="GAS"
+              onChange={onPedalChange}
+            />
 
          </div>
       </div>

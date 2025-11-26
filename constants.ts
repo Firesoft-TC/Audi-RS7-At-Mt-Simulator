@@ -1,3 +1,4 @@
+
 import { PhysicsConfig } from './types';
 
 // Audi RS7 Specs (Approximate for Simulation)
@@ -10,5 +11,5 @@ export const RS7_CONFIG: PhysicsConfig = {
   tireDiameter: 0.7, // ~21 inch wheels + tires
   mass: 2065, // kg
   brakingPower: 0.8, // Coefficient for braking logic
-  enginePower: 0.15, // Coefficient for acceleration logic
+  enginePower: 0.195, // Increased from 0.15 to allow 330km/h top speed
 };

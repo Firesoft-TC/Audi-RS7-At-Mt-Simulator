@@ -1,24 +1,20 @@
-<img width="776" height="320" alt="image" src="https://github.com/user-attachments/assets/32a9838f-b8b5-4f87-a889-5781808b839a" />
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+</div>
 
+# Run and deploy your AI Studio app
 
-# Run and deploy Audi-RS7-At-Mt-Simulator app
+This contains everything you need to run your app locally.
+
+View your app in AI Studio: https://ai.studio/apps/drive/1gKIsyCb2TPXua167Xw5GLUH0OmKfXu0Z
+
 ## Run Locally
+
 **Prerequisites:**  Node.js
 
 
-1- Extract Project Downloaded zip file into a folder
-<br></br>
-
-2- Run cmd (command prompts) and go to your folder path
-<br></br>
-
-3- type `npm install` 
-<br></br>
-
-4- Run the Simulator with `npm run dev`
-<br></br>
-
-5- open link (http://localhost:3000) in your Browser
-
-
-
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

@@ -2,7 +2,7 @@
 export interface CarState {
   rpm: number;
   speed: number;
-  gear: number; // 0 = Neutral, -1 = Reverse, 1-8 = Forward
+  gear: number; // 0 = Neutral, -1 = Reverse, 1-8 = Forward (For CVT, 1 is Drive)
   clutchPosition: number; // 0.0 (fully engaged/up) to 1.0 (fully disengaged/down)
   throttlePosition: number; // 0.0 to 1.0
   brakePosition: number; // 0.0 to 1.0
@@ -15,11 +15,14 @@ export interface CarState {
   engineTemp: number; // Degrees Celsius
   
   // New Features
-  isAutomatic: boolean;
+  transmissionMode: 'MT' | 'AT' | 'DCT' | 'CVT';
   accelTimer: number; // Current timer value in seconds
   lastZeroToHundred: number | null; // Last 0-100 time
   bestZeroToHundred: number | null; // Best 0-100 time
   isTimingAccel: boolean; // If currently timing a run
+  
+  // Logic helpers
+  lastShiftTime: number; // Timestamp of last automatic shift to prevent skipping
 }
 
 export interface PhysicsConfig {
@@ -45,3 +48,4 @@ export enum GameEvent {
 }
 
 export type ThemeMode = 'sport' | 'race' | 'eco' | 'retro';
+export type ClusterBackground = 'none' | 'highway' | 'city' | 'tunnel';

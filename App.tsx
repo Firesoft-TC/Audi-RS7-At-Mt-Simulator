@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Dashboard from './components/Dashboard';
 import Controls from './components/Controls';
 import Assistant from './components/Assistant';
-import { CarState, GameEvent, PhysicsConfig, ThemeMode } from './types';
+import { CarState, GameEvent, PhysicsConfig, ThemeMode, ClusterBackground } from './types';
 import { RS7_CONFIG } from './constants';
 import { getInstructorFeedback } from './services/geminiService';
 import { engineAudio } from './services/audioService';
@@ -24,15 +24,17 @@ const App: React.FC = () => {
     laneSystemActive: false,
     isDrifting: false,
     engineTemp: 20, // Ambient temp Celsius
-    isAutomatic: false,
+    transmissionMode: 'MT',
     accelTimer: 0,
     lastZeroToHundred: null,
     bestZeroToHundred: null,
-    isTimingAccel: false
+    isTimingAccel: false,
+    lastShiftTime: 0
   });
 
   const [instructorMsg, setInstructorMsg] = useState("Start the engine. Clutch in!");
   const [theme, setTheme] = useState<ThemeMode>('sport');
+  const [clusterBg, setClusterBg] = useState<ClusterBackground>('none');
   
   // Refs for physics loop to avoid closure staleness
   const carRef = useRef(car);
@@ -60,6 +62,15 @@ const App: React.FC = () => {
     });
   };
 
+  const toggleClusterBg = () => {
+    setClusterBg(prev => {
+      if (prev === 'none') return 'highway';
+      if (prev === 'highway') return 'city';
+      if (prev === 'city') return 'tunnel';
+      return 'none';
+    });
+  };
+
   // Handle Inputs
   const handlePedalChange = (type: 'throttle' | 'brake' | 'clutch', value: number) => {
     setCar(prev => ({ ...prev, [`${type}Position`]: value }));
@@ -78,7 +89,7 @@ const App: React.FC = () => {
         
         // If engine is running and clutch is NOT pressed, GRIND gears and fail shift
         // If Automatic, we ignore this check as logic handles it
-        if (!isClutchPressed && prev.isEngineRunning && !prev.isAutomatic) {
+        if (!isClutchPressed && prev.isEngineRunning && prev.transmissionMode === 'MT') {
             lastEventRef.current = GameEvent.GRIND;
             return prev; // Return previous state (no gear change)
         }
@@ -118,7 +129,15 @@ const App: React.FC = () => {
   };
 
   const toggleTransmission = () => {
-    setCar(prev => ({ ...prev, isAutomatic: !prev.isAutomatic }));
+    setCar(prev => {
+        let next: CarState['transmissionMode'] = 'MT';
+        if (prev.transmissionMode === 'MT') next = 'AT';
+        else if (prev.transmissionMode === 'AT') next = 'DCT';
+        else if (prev.transmissionMode === 'DCT') next = 'CVT';
+        else next = 'MT';
+        
+        return { ...prev, transmissionMode: next };
+    });
   }
 
   const startHorn = () => engineAudio.startHorn();
@@ -136,6 +155,8 @@ const App: React.FC = () => {
       else if (e.code === 'Digit4' || e.code === 'Numpad4') handleGearChange(4);
       else if (e.code === 'Digit5' || e.code === 'Numpad5') handleGearChange(5);
       else if (e.code === 'Digit6' || e.code === 'Numpad6') handleGearChange(6);
+      else if (e.code === 'Digit7' || e.code === 'Numpad7') handleGearChange(7);
+      else if (e.code === 'Digit8' || e.code === 'Numpad8') handleGearChange(8);
       else if (e.code === 'KeyR') handleGearChange(-1);
       else if (e.code === 'KeyN') handleGearChange(0);
 
@@ -182,23 +203,31 @@ const App: React.FC = () => {
 
     const state = carRef.current;
     const currentTheme = themeRef.current;
+    const isAuto = state.transmissionMode !== 'MT';
     
     // Clutch engagement: 1.0 (Pedal Up) to 0.0 (Pedal Down)
     let engagement = 1.0 - state.clutchPosition; 
 
     // Resistance
     const rollingResistance = 100;
-    // Lower air drag coefficient significantly to allow higher top speed
+    // Air Resistance tuned for top speed ~330 km/h
     const airResistance = (Math.abs(state.speed) * 1.5) + ((state.speed * state.speed) * 0.05);
     const totalDrag = rollingResistance + airResistance;
 
-    let wheelRpm = 0;
-    const gearRatio = state.gear !== 0 ? RS7_CONFIG.gearRatios[Math.abs(state.gear)] : 0;
+    // --- TRANSMISSION LOGIC SETUP ---
+    let currentGearRatio = 0;
     const finalDrive = RS7_CONFIG.finalDrive;
     
-    if (state.gear !== 0) {
-       const wheelRevPerSec = (Math.abs(state.speed) / 3.6) / (Math.PI * RS7_CONFIG.tireDiameter);
-       wheelRpm = wheelRevPerSec * 60 * finalDrive * gearRatio;
+    // For AT/DCT/MT, get standard ratio
+    if (state.transmissionMode !== 'CVT' && state.gear !== 0) {
+        // Fix: Use Index 0 for Reverse (-1), Index 1 for 1st, etc.
+        // RS7_CONFIG.gearRatios: [3.2 (R), 4.71 (1), 3.14 (2), ...]
+        const ratioIndex = state.gear === -1 ? 0 : state.gear;
+        if (ratioIndex >= 0 && ratioIndex < RS7_CONFIG.gearRatios.length) {
+             currentGearRatio = RS7_CONFIG.gearRatios[ratioIndex];
+        } else {
+             currentGearRatio = 1; // Fallback
+        }
     }
 
     let newRpm = state.rpm;
@@ -209,58 +238,107 @@ const App: React.FC = () => {
     let isDrifting = false;
     let newGear = state.gear;
     let newClutchPos = state.clutchPosition;
+    let newLastShiftTime = state.lastShiftTime;
 
-    // --- AUTOMATIC TRANSMISSION LOGIC ---
-    if (state.isAutomatic && engineRunning) {
-        // Auto-Clutch
+    // --- AUTOMATIC TRANSMISSION LOGIC (AT, DCT) ---
+    if ((state.transmissionMode === 'AT' || state.transmissionMode === 'DCT') && engineRunning) {
+        // Auto-Clutch with Smoothing (Fluid Coupling Simulation)
         if (state.gear !== 0) {
-            // If RPM is low (near idle), disengage clutch to prevent stall
-            if (newRpm < 1000 && state.throttlePosition < 0.1) {
-                newClutchPos = 1.0; // Clutch Down
-            } else if (newRpm < 1500) {
-                // Slip clutch for smooth takeoff
-                newClutchPos = 1.0 - Math.min(1, (newRpm - 800) / 700);
+            
+            const startSlipRpm = 800;
+            const fullyEngagedRpm = 2200;
+            
+            if (newRpm <= startSlipRpm) {
+                 newClutchPos = 1.0; 
+            } else if (newRpm >= fullyEngagedRpm) {
+                 newClutchPos = 0.0;
             } else {
-                newClutchPos = 0.0; // Clutch Up (Engaged)
+                 const t = (newRpm - startSlipRpm) / (fullyEngagedRpm - startSlipRpm);
+                 newClutchPos = 1.0 - t;
             }
+            
+            if (Math.abs(newSpeed) < 1 && state.brakePosition > 0.5) {
+                newClutchPos = 1.0;
+            }
+
             engagement = 1.0 - newClutchPos;
             
-            // Auto-Shift Logic
-            // Define Shift Points based on Theme
-            let upshiftRpm = 6500;
-            let downshiftRpm = 1800; // Default
+            // Shift Logic
+            const shiftCooldown = state.transmissionMode === 'DCT' ? 200 : 500; 
+            const timeSinceLastShift = time - state.lastShiftTime;
 
-            if (currentTheme === 'eco') {
-                upshiftRpm = 3000;
-                downshiftRpm = 2000;
-            } else if (currentTheme === 'sport') {
-                upshiftRpm = 6000;
-                downshiftRpm = 3000;
-            } else if (currentTheme === 'race') {
-                upshiftRpm = 7000;
-                downshiftRpm = 3500;
-            } else if (currentTheme === 'retro') {
-                // Turbo Mode
-                upshiftRpm = 7100;
-                downshiftRpm = 4000; // Keep turbo spooled
-            }
+            if (timeSinceLastShift > shiftCooldown) {
+                
+                // --- MODE SPECIFIC SHIFT POINTS ---
+                let upshiftRpm = 6000;
+                let downshiftRpm = 3000;
 
-            // Kickdown: If throttle > 90%, hold gear until maxRpm
-            if (state.throttlePosition > 0.9) upshiftRpm = 7100;
-
-            // Logic (Simple sequential)
-            if (newRpm > upshiftRpm && state.gear > 0 && state.gear < 8) {
-                newGear = state.gear + 1;
-                // Add fake delay or instant shift? Instant for now.
-            } else if (newRpm < downshiftRpm && state.gear > 1 && state.throttlePosition > 0.2) {
-                // Downshift under load
-                newGear = state.gear - 1;
-            } else if (newRpm < 1100 && state.gear > 1) {
-                // Downshift coming to stop
-                newGear = state.gear - 1;
+                // Eco: Up @ 4000, Down @ 3000
+                if (currentTheme === 'eco') { 
+                    upshiftRpm = 4000; 
+                    downshiftRpm = 3000; 
+                } 
+                // Sport: Up @ 6000, Down @ 4000
+                else if (currentTheme === 'sport') { 
+                    upshiftRpm = 6000; 
+                    downshiftRpm = 4000; 
+                } 
+                // Race: Up @ Cutoff (Redline), Down @ 4500
+                else if (currentTheme === 'race') { 
+                    upshiftRpm = RS7_CONFIG.maxRpm - 50; 
+                    downshiftRpm = 4500; 
+                } 
+                // Turbo (Retro): Up @ Cutoff (Redline), Down @ 5000
+                else if (currentTheme === 'retro') { 
+                    upshiftRpm = RS7_CONFIG.maxRpm - 50; 
+                    downshiftRpm = 5000; 
+                }
+                
+                // --- UPSHIFT LOGIC ---
+                // Only upshift if we are not in the top gear (8)
+                if (state.gear > 0 && state.gear < 8) {
+                    if (newRpm >= upshiftRpm) {
+                        newGear = state.gear + 1;
+                        newLastShiftTime = time;
+                        // Reduce RPM immediately to simulate the shift landing
+                        // logic will catch up next frame but this prevents double-shifting or limiter bounce
+                        const nextGearRatio = RS7_CONFIG.gearRatios[newGear];
+                        newRpm = newRpm * (nextGearRatio / currentGearRatio);
+                    }
+                }
+                
+                // --- DOWNSHIFT LOGIC ---
+                if (state.gear > 1) {
+                     const nextGearRatio = RS7_CONFIG.gearRatios[state.gear - 1];
+                     const predictedRpm = newRpm * (nextGearRatio / currentGearRatio);
+                     
+                     // Check if safe to downshift (prevent money shift) and check threshold
+                     if (predictedRpm < RS7_CONFIG.maxRpm - 500 && newRpm < downshiftRpm) {
+                        newGear = state.gear - 1;
+                        newLastShiftTime = time;
+                        newRpm = predictedRpm; // Snap RPM up
+                     }
+                }
             }
         }
     }
+
+    // --- CVT LOGIC ---
+    if (state.transmissionMode === 'CVT' && engineRunning) {
+        if (state.gear !== 0) {
+            newClutchPos = 0.0; 
+            engagement = 1.0;
+            const targetCvtRpm = Math.max(RS7_CONFIG.idleRpm, 800 + (state.throttlePosition * 6000));
+            const rpmDiff = targetCvtRpm - state.rpm;
+            newRpm += rpmDiff * dt * 2.0; 
+            const speedMps = Math.max(1, Math.abs(state.speed) / 3.6);
+            const wheelRpm = speedMps / (Math.PI * RS7_CONFIG.tireDiameter) * 60;
+            let calculatedRatio = newRpm / (wheelRpm * finalDrive);
+            calculatedRatio = Math.max(0.5, Math.min(5.0, calculatedRatio));
+            currentGearRatio = calculatedRatio;
+        }
+    }
+
 
     // --- ACCELERATION TIMER (0-100 km/h) ---
     let newAccelTimer = state.accelTimer;
@@ -269,11 +347,9 @@ const App: React.FC = () => {
     let newBestTime = state.bestZeroToHundred;
 
     if (Math.abs(newSpeed) < 2) {
-        // Reset Logic when stopped
         newAccelTimer = 0;
         newIsTiming = false;
     } else if (Math.abs(newSpeed) > 2 && !newIsTiming && newAccelTimer === 0) {
-        // Start Logic
         newIsTiming = true;
     }
 
@@ -292,27 +368,14 @@ const App: React.FC = () => {
     let powerMultiplier = 1.0;
     let audioVol = 1.0;
 
-    if (currentTheme === 'eco') {
-        powerMultiplier = 0.7;
-        audioVol = 0.5; // Quieter in Eco
-    } else if (currentTheme === 'sport') {
-        powerMultiplier = 1.0;
-        audioVol = 0.8; // Standard
-    } else if (currentTheme === 'race') {
-        powerMultiplier = 1.3;
-        audioVol = 1.2; // Loudest
-    } else if (currentTheme === 'retro') {
-        powerMultiplier = 1.5; 
-        audioVol = 1.1; 
-    }
+    if (currentTheme === 'eco') { powerMultiplier = 0.7; audioVol = 0.5; }
+    else if (currentTheme === 'sport') { powerMultiplier = 1.0; audioVol = 0.8; }
+    else if (currentTheme === 'race') { powerMultiplier = 1.3; audioVol = 1.2; }
+    else if (currentTheme === 'retro') { powerMultiplier = 1.5; audioVol = 1.1; }
 
-    // --- LANE ASSIST LOGIC ---
+    // --- LANE ASSIST ---
     if (Math.abs(state.speed) > 30) {
-        // Simulate drift using sine wave over time
-        // Frequency increases slightly with speed
         laneOffsetRef.current = Math.sin(time / 2000) * 1.2; 
-        
-        // If absolute offset > 0.8, we are "crossing the line"
         if (Math.abs(laneOffsetRef.current) > 0.8) {
             isDrifting = true;
             if (state.laneSystemActive && time - driftWarningCooldownRef.current > 1000) {
@@ -323,94 +386,59 @@ const App: React.FC = () => {
     }
 
     // --- ENGINE LOGIC ---
-    // Thermal Physics
-    const ambientTemp = 20;
-    let targetTemp = ambientTemp;
-    let heatRate = 0.1; // Cooldown rate
+    let targetTemp = 90;
+    let heatRate = 0.1;
 
     if (engineRunning) {
-        // Target operating temp approx 90-100C.
-        // If high RPM, can go higher.
         targetTemp = 90 + Math.max(0, (state.rpm - 5000) / 100);
-        // Heat up rate depends on engine load (throttle) and RPM
         heatRate = 0.5 + (state.throttlePosition * 1.0) + (state.rpm / 5000);
     }
     
-    // Move current temp towards target
-    if (newTemp < targetTemp) {
-        newTemp += heatRate * dt * 2.0; // Heat up
-    } else {
-        newTemp -= 0.2 * dt; // Cool down slowly
-    }
+    if (newTemp < targetTemp) newTemp += heatRate * dt * 2.0;
+    else newTemp -= 0.2 * dt;
 
     if (!engineRunning) {
         newRpm = Math.max(0, state.rpm - (dt * 500));
     } else if (state.isStalled) {
         newRpm = 0;
     } else {
-        // Fuel Consumption
         const consumption = (0.01 + (state.throttlePosition * 0.1) + (state.rpm / 20000)) * dt;
         newFuel = Math.max(0, state.fuel - consumption);
-        
         if (newFuel <= 0) {
           engineRunning = false;
           lastEventRef.current = GameEvent.OUT_OF_FUEL;
         }
 
-        // Torque Curve Simulation (More power in mid range)
-        // Normalized RPM (0 to 1)
         const nRpm = Math.max(0, state.rpm / RS7_CONFIG.maxRpm);
-        // Peak torque around 0.5 (3600 RPM)
         const torqueCurve = 0.5 + (2 * nRpm) - (2 * nRpm * nRpm); 
         
         let engineTorqueBase = (state.throttlePosition * RS7_CONFIG.enginePower * 6500 * torqueCurve * powerMultiplier); 
 
         // Rev Limiter
         if (state.rpm >= RS7_CONFIG.maxRpm) {
-            engineTorqueBase = -200; 
+            engineTorqueBase = -200; // Hard Cut
             lastEventRef.current = GameEvent.REDLINE;
         } else if (state.throttlePosition === 0 && state.rpm > RS7_CONFIG.idleRpm) {
              engineTorqueBase = -100; // Engine Braking
         }
 
-        // Neutral or Clutch Disengaged (Coasting Engine)
-        if (newGear === 0 || engagement < 0.1) {
+        // Apply Torque Logic
+        if (newGear === 0 || engagement < 0.05) {
+            // Neutral / Clutch In
             let rpmTarget = state.throttlePosition > 0 ? RS7_CONFIG.maxRpm : RS7_CONFIG.idleRpm;
-            // Rev up fast, drop moderate
             let rpmChangeRate = state.throttlePosition > 0 ? (10000 * powerMultiplier) : 3000; 
-
-            if (state.rpm < rpmTarget) {
-                 newRpm = Math.min(rpmTarget, state.rpm + (rpmChangeRate * dt * state.throttlePosition));
-            } else {
-                 newRpm = Math.max(rpmTarget, state.rpm - (rpmChangeRate * dt));
-            }
+            if (state.rpm < rpmTarget) newRpm = Math.min(rpmTarget, state.rpm + (rpmChangeRate * dt * state.throttlePosition));
+            else newRpm = Math.max(rpmTarget, state.rpm - (rpmChangeRate * dt));
         } else {
-            // --- DRIVE LOGIC (In Gear & Clutch Engaged) ---
-            
-            // Speed Cap for current gear
-            const currentGearRatio = RS7_CONFIG.gearRatios[Math.abs(newGear)];
+            // In Gear
             const totalRatio = currentGearRatio * finalDrive;
-            const maxSpeedForGear = (RS7_CONFIG.maxRpm / 60 / totalRatio) * (Math.PI * RS7_CONFIG.tireDiameter) * 3.6;
-
-            // Soft limiter
-            if (Math.abs(state.speed) >= maxSpeedForGear - 5 && state.throttlePosition > 0) {
-                 engineTorqueBase *= Math.max(0, 1 - (Math.abs(state.speed) - (maxSpeedForGear - 5)) / 5);
-            }
-            if (Math.abs(state.speed) >= maxSpeedForGear) {
-                engineTorqueBase = -50; 
-            }
-
-            // Calc Drive Force
+            // Physical force
             const wheelTorque = engineTorqueBase * totalRatio;
             const tireRadius = RS7_CONFIG.tireDiameter / 2;
             let driveForce = wheelTorque / tireRadius;
 
-            // Reverse Logic
-            if (newGear === -1) {
-                driveForce = -driveForce;
-            }
+            if (newGear === -1) driveForce = -driveForce;
 
-            // --- NET FORCE ---
             const direction = Math.sign(newSpeed);
             const dragForce = (direction === 0 ? 0 : direction) * totalDrag;
 
@@ -418,34 +446,48 @@ const App: React.FC = () => {
             const acceleration = netDriveForce / RS7_CONFIG.mass;
             newSpeed += acceleration * dt * 3.6;
 
-            // --- RPM MATCHING ---
-            const targetWheelRpm = Math.abs((newSpeed / 3.6) / (Math.PI * RS7_CONFIG.tireDiameter) * 60 * totalRatio);
-            
-            // Slip / Burnout Logic
-            let effectiveEngagement = engagement;
-            const rpmDelta = state.rpm - targetWheelRpm;
+            // CVT RPM is calculated differently (above), skip standard linking
+            if (state.transmissionMode !== 'CVT') {
+                const targetWheelRpm = Math.abs((newSpeed / 3.6) / (Math.PI * RS7_CONFIG.tireDiameter) * 60 * totalRatio);
+                
+                // Slip / Burnout Logic (Only for MT or hard launches)
+                let effectiveEngagement = engagement;
+                const rpmDelta = state.rpm - targetWheelRpm;
 
-            // If dumping clutch at high RPM
-            if (effectiveEngagement > 0.5 && rpmDelta > 2000 && state.throttlePosition > 0.7 && Math.abs(newGear) <= 2) {
-                effectiveEngagement = 0.05; // Tires spinning
-            }
+                // Simple slip model for launches
+                if (state.transmissionMode === 'MT' && effectiveEngagement > 0.5 && rpmDelta > 2000 && state.throttlePosition > 0.7 && Math.abs(newGear) <= 2) {
+                    effectiveEngagement = 0.05; 
+                }
 
-            newRpm = (targetWheelRpm * effectiveEngagement) + (state.rpm * (1 - effectiveEngagement));
-            
-            // If RPM is forced up by wheels (money shift protection logic could go here) or down by wheels
-            // Allow blipping if slipping
-            if (effectiveEngagement < 1.0) {
-               const revUpRate = state.throttlePosition * 8000;
-               if (state.throttlePosition === 0) {
-                  newRpm -= 2500 * dt;
-               } else {
-                  newRpm += revUpRate * (1 - effectiveEngagement) * dt;
-               }
+                const lockedRpm = (targetWheelRpm * effectiveEngagement) + (state.rpm * (1 - effectiveEngagement));
+                
+                if (effectiveEngagement < 0.95) {
+                   const revUpRate = state.throttlePosition * 8000;
+                   if (state.throttlePosition === 0) {
+                       newRpm = Math.max(lockedRpm, state.rpm - (2500 * dt));
+                   } else {
+                       const flareTarget = Math.max(lockedRpm, state.rpm + (revUpRate * dt));
+                       newRpm = (flareTarget * (1 - effectiveEngagement)) + (lockedRpm * effectiveEngagement);
+                   }
+                } else {
+                    newRpm = lockedRpm;
+                }
+
+                // --- CRITICAL FIX: PHYSICAL SPEED LIMIT PER GEAR ---
+                if (state.gear > 0 && effectiveEngagement > 0.9) {
+                     const maxTheoreticalSpeed = (RS7_CONFIG.maxRpm * Math.PI * RS7_CONFIG.tireDiameter * 3.6) / (60 * currentGearRatio * finalDrive);
+                     
+                     if (Math.abs(newSpeed) > maxTheoreticalSpeed) {
+                         newSpeed = Math.sign(newSpeed) * maxTheoreticalSpeed;
+                         newRpm = RS7_CONFIG.maxRpm; 
+                         lastEventRef.current = GameEvent.REDLINE;
+                     }
+                }
             }
         }
     }
 
-    // --- BRAKING LOGIC ---
+    // --- BRAKING ---
     if (state.brakePosition > 0) {
         const brakeDecel = state.brakePosition * 40; 
         if (newSpeed > 0) {
@@ -456,6 +498,7 @@ const App: React.FC = () => {
             if (newSpeed > 0) newSpeed = 0;
         }
     } else if (!state.isEngineRunning && newGear === 0) {
+         // Rolling resistance stop
          if (newSpeed > 0) newSpeed = Math.max(0, newSpeed - 1 * dt);
          if (newSpeed < 0) newSpeed = Math.min(0, newSpeed + 1 * dt);
     }
@@ -465,13 +508,13 @@ const App: React.FC = () => {
         newRpm = RS7_CONFIG.maxRpm - (Math.random() * 50); 
     }
     
-    // Global Limit
-    if (newSpeed > 250) newSpeed = 250;
+    // Global Limit increased to 330
+    if (newSpeed > 330) newSpeed = 330;
     if (newSpeed < -60) newSpeed = -60;
 
-    // Stall Logic (Disabled for Auto)
+    // Stall Logic (Disabled for Auto modes)
     let isStalled = state.isStalled;
-    if (state.isEngineRunning && !state.isStalled && engagement > 0.8 && newGear !== 0 && !state.isAutomatic) {
+    if (state.isEngineRunning && !state.isStalled && engagement > 0.8 && newGear !== 0 && state.transmissionMode === 'MT') {
         if (newRpm < 400 && Math.abs(newSpeed) < 5) {
              isStalled = true;
              lastEventRef.current = GameEvent.STALL;
@@ -487,7 +530,7 @@ const App: React.FC = () => {
         rpm: newRpm,
         speed: newSpeed,
         gear: newGear,
-        clutchPosition: state.isAutomatic ? newClutchPos : state.clutchPosition,
+        clutchPosition: isAuto ? newClutchPos : state.clutchPosition,
         fuel: newFuel,
         engineTemp: newTemp,
         isStalled,
@@ -497,7 +540,8 @@ const App: React.FC = () => {
         accelTimer: newAccelTimer,
         isTimingAccel: newIsTiming,
         lastZeroToHundred: newLastTime,
-        bestZeroToHundred: newBestTime
+        bestZeroToHundred: newBestTime,
+        lastShiftTime: newLastShiftTime
     };
     
     setCar(newState);
@@ -536,7 +580,7 @@ const App: React.FC = () => {
       </div>
       
       <div className="z-10 w-full flex justify-center">
-         <Dashboard state={car} theme={theme} onToggleTheme={toggleTheme} />
+         <Dashboard state={car} theme={theme} onToggleTheme={toggleTheme} clusterBg={clusterBg} onToggleClusterBg={toggleClusterBg} />
       </div>
 
       <Controls 
@@ -546,7 +590,7 @@ const App: React.FC = () => {
          gear={car.gear}
          fuel={car.fuel}
          laneActive={car.laneSystemActive}
-         isAutomatic={car.isAutomatic}
+         transmissionMode={car.transmissionMode}
          onPedalChange={handlePedalChange}
          onGearChange={handleGearChange}
          onIgnition={toggleIgnition}
@@ -560,7 +604,7 @@ const App: React.FC = () => {
       />
       
       <div className="text-gray-600 text-xs mt-4 font-mono text-center">
-         <p>CONTROLS: MOUSE/TOUCH on Pedals | KEYBOARD: ARROWS (Gas/Brake) | SHIFT (Clutch) | 1-6 (Gears) | H (Horn)</p>
+         <p>CONTROLS: MOUSE/TOUCH on Pedals | KEYBOARD: ARROWS (Gas/Brake) | SHIFT (Clutch) | 1-8 (Gears) | H (Horn)</p>
       </div>
 
       <style>{`

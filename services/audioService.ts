@@ -5,9 +5,10 @@ class AudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   
-  // Engine Oscillators
-  private osc1: OscillatorNode | null = null; // Main Tone
-  private osc2: OscillatorNode | null = null; // Sub/Growl
+  // Engine Oscillators & Filter
+  private engineFilter: BiquadFilterNode | null = null;
+  private osc1: OscillatorNode | null = null; // Main Tone (Sawtooth)
+  private osc2: OscillatorNode | null = null; // Sub/Growl (Square)
   private osc1Gain: GainNode | null = null;
   private osc2Gain: GainNode | null = null;
 
@@ -29,19 +30,27 @@ class AudioEngine {
     this.masterGain.gain.value = 0.5;
     this.masterGain.connect(this.ctx.destination);
 
-    // --- OSC 1: Sawtooth (The Rasp) ---
+    // --- ENGINE FILTER (The Key to Deep Sound) ---
+    // A Lowpass filter cuts out the "buzzing" high frequencies, leaving the deep bass.
+    // It will open up as RPM increases.
+    this.engineFilter = this.ctx.createBiquadFilter();
+    this.engineFilter.type = 'lowpass';
+    this.engineFilter.Q.value = 1.0; // Resonance adds a bit of aggressive growl
+    this.engineFilter.connect(this.masterGain);
+
+    // --- OSC 1: Sawtooth (The Mechanical Texture) ---
     this.osc1 = this.ctx.createOscillator();
     this.osc1.type = 'sawtooth';
     this.osc1Gain = this.ctx.createGain();
     this.osc1.connect(this.osc1Gain);
-    this.osc1Gain.connect(this.masterGain);
+    this.osc1Gain.connect(this.engineFilter); // Route through filter
 
-    // --- OSC 2: Square (The Body/Grumble) ---
+    // --- OSC 2: Square (The Deep Body/Thump) ---
     this.osc2 = this.ctx.createOscillator();
     this.osc2.type = 'square';
     this.osc2Gain = this.ctx.createGain();
     this.osc2.connect(this.osc2Gain);
-    this.osc2Gain.connect(this.masterGain);
+    this.osc2Gain.connect(this.engineFilter); // Route through filter
 
     // --- Noise (Air/Road) ---
     const bufferSize = this.ctx.sampleRate * 2; // 2 seconds of noise
@@ -73,31 +82,38 @@ class AudioEngine {
   }
 
   update(rpm: number, load: number, speed: number, volumeMod: number = 1.0) {
-    if (!this.ctx || !this.osc1 || !this.osc2) return;
+    if (!this.ctx || !this.osc1 || !this.osc2 || !this.engineFilter) return;
 
-    // --- DEEPER FREQUENCY CALCULATION ---
-    // Lowered the divider (rpm / 24) and base (30Hz) for deeper V8 rumble
-    const baseFreq = 30 + (rpm / 24); 
+    // --- DEEPER PITCH CALCULATION ---
+    // V8 firing frequency approx RPM / 15.
+    // 800 RPM / 15 = 53 Hz (Low Rumble)
+    // 7000 RPM / 15 = 466 Hz (Scream)
+    const fundamental = Math.max(20, rpm / 15);
     
-    // Osc 1 (Main)
-    this.osc1.frequency.setTargetAtTime(baseFreq, this.ctx.currentTime, 0.05);
+    // Osc 1 (Texture)
+    this.osc1.frequency.setTargetAtTime(fundamental, this.ctx.currentTime, 0.05);
     
-    // Osc 2 (Sub - Detuned slightly lower for "beat" frequency)
-    this.osc2.frequency.setTargetAtTime(baseFreq * 0.5, this.ctx.currentTime, 0.05);
+    // Osc 2 (Sub-Octave Bass) - One octave down for that "Heavy" feeling
+    this.osc2.frequency.setTargetAtTime(fundamental * 0.5, this.ctx.currentTime, 0.05);
 
-    // Volume Mix
-    // Load affects volume significantly
-    const throttleFactor = 0.3 + (load * 0.7);
+    // --- DYNAMIC FILTERING (Prevents "Mosquito" Sound) ---
+    // At idle (800rpm), cutoff is low (~150Hz) -> Muffled, deep rumble.
+    // At redline, cutoff is high (~2000Hz) -> Raw, loud exhaust.
+    const filterFreq = 100 + (rpm * 0.35); 
+    this.engineFilter.frequency.setTargetAtTime(filterFreq, this.ctx.currentTime, 0.1);
+
+    // --- VOLUME MIXING ---
+    // Load affects volume significantly (Throttle makes it louder)
+    const throttleFactor = 0.4 + (load * 0.6);
     
-    // Gain Calculation with Volume Modifier (Drive Mode)
-    const mainVol = (0.05 + (rpm / 10000)) * throttleFactor * volumeMod;
-    // Boosted Sub Volume for bass
-    const subVol = (0.25 + (rpm / 12000)) * throttleFactor * volumeMod;
+    // Mix: More Square Wave (Sub) than Sawtooth (Rasp) for a fuller sound
+    const mainVol = 0.2 * throttleFactor * volumeMod; // Sawtooth
+    const subVol = 0.4 * throttleFactor * volumeMod;  // Square (Boosted for "Por/Full" sound)
 
     this.osc1Gain?.gain.setTargetAtTime(mainVol, this.ctx.currentTime, 0.1);
     this.osc2Gain?.gain.setTargetAtTime(subVol, this.ctx.currentTime, 0.1);
 
-    // Noise (Wind noise based on speed) - Less affected by engine mode
+    // Noise (Wind noise based on speed)
     const speedVol = Math.min(0.4, (Math.abs(speed) / 300) * 0.5);
     this.noiseGain?.gain.setTargetAtTime(speedVol, this.ctx.currentTime, 0.5);
   }

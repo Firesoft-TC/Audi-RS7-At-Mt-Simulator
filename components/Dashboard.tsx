@@ -1,11 +1,13 @@
 
 import React from 'react';
-import { CarState, ThemeMode } from '../types';
+import { CarState, ThemeMode, ClusterBackground } from '../types';
 
 interface DashboardProps {
   state: CarState;
   theme: ThemeMode;
+  clusterBg: ClusterBackground;
   onToggleTheme: () => void;
+  onToggleClusterBg: () => void;
 }
 
 const WarningIcon: React.FC<{ active: boolean; color: string; path: string; label?: string; blink?: boolean }> = ({ active, color, path, blink }) => (
@@ -16,7 +18,7 @@ const WarningIcon: React.FC<{ active: boolean; color: string; path: string; labe
     </div>
 );
 
-const Dashboard: React.FC<DashboardProps> = ({ state, theme, onToggleTheme }) => {
+const Dashboard: React.FC<DashboardProps> = ({ state, theme, clusterBg, onToggleTheme, onToggleClusterBg }) => {
   // --- TACHOMETER MATH ---
   const sweepAngle = 270;
   
@@ -148,38 +150,79 @@ const Dashboard: React.FC<DashboardProps> = ({ state, theme, onToggleTheme }) =>
     }
   };
 
+  const bgImages: Record<string, string> = {
+    highway: 'https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?q=80&w=1920&auto=format&fit=crop', // Open, scenic highway
+    city: 'https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?q=80&w=1920&auto=format&fit=crop', // Dark cyberpunk-ish city
+    tunnel: 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?q=80&w=1920&auto=format&fit=crop' // Modern light tunnel
+  };
+
   const currentStyle = themeStyles[theme];
   
   // Warning Light Logic
   const showBulbCheck = !state.isEngineRunning || state.isStalled;
 
+  // Gear Display Logic
+  let gearDisplay = '';
+  if (state.gear === 0) gearDisplay = 'N';
+  else if (state.gear === -1) gearDisplay = 'R';
+  else {
+      // Forward gears
+      if (state.transmissionMode === 'CVT') {
+          gearDisplay = 'D';
+      } else {
+          gearDisplay = state.gear.toString();
+      }
+  }
+
   return (
     <div className={`w-full max-w-4xl mx-auto p-4 ${currentStyle.bg} rounded-3xl border-4 ${currentStyle.border} shadow-2xl relative overflow-hidden aspect-[2.5/1] transition-colors duration-500`}>
       
-      {/* Theme Toggle */}
-      <button 
-        onClick={onToggleTheme}
-        className="absolute top-4 right-4 z-50 text-[10px] uppercase tracking-widest border border-gray-600 text-gray-400 px-2 py-1 rounded hover:bg-white hover:text-black transition-colors"
-      >
-        Mode: {theme}
-      </button>
+      {/* Background Image Layer */}
+      {clusterBg !== 'none' && (
+         <div className="absolute inset-0 z-0 pointer-events-none">
+            <img 
+                src={bgImages[clusterBg]} 
+                alt="background" 
+                className="w-full h-full object-cover opacity-60 mix-blend-overlay blur-[2px] scale-105" 
+            />
+            <div className="absolute inset-0 bg-black/50"></div>
+         </div>
+      )}
 
-      {/* Background Grid Pattern */}
-      <div className={`absolute inset-0 ${currentStyle.gridOpacity} pointer-events-none`} 
-           style={{ backgroundImage: 'linear-gradient(#444 1px, transparent 1px), linear-gradient(90deg, #444 1px, transparent 1px)', backgroundSize: '40px 40px' }}></div>
+      {/* Controls: Mode & BG Toggle */}
+      <div className="absolute top-4 right-4 z-50 flex gap-2">
+         <button 
+           onClick={onToggleClusterBg}
+           className="text-[10px] uppercase tracking-widest border border-gray-600 text-gray-400 px-2 py-1 rounded hover:bg-white hover:text-black transition-colors bg-black/50 backdrop-blur-md"
+         >
+           BG: {clusterBg}
+         </button>
+         <button 
+           onClick={onToggleTheme}
+           className="text-[10px] uppercase tracking-widest border border-gray-600 text-gray-400 px-2 py-1 rounded hover:bg-white hover:text-black transition-colors bg-black/50 backdrop-blur-md"
+         >
+           Mode: {theme}
+         </button>
+      </div>
+
+      {/* Background Grid Pattern (Only if no custom bg) */}
+      {clusterBg === 'none' && (
+        <div className={`absolute inset-0 ${currentStyle.gridOpacity} pointer-events-none`} 
+             style={{ backgroundImage: 'linear-gradient(#444 1px, transparent 1px), linear-gradient(90deg, #444 1px, transparent 1px)', backgroundSize: '40px 40px' }}></div>
+      )}
       
-      {/* Texture overlay */}
-      {currentStyle.texture && (
+      {/* Texture overlay (Only if no custom bg) */}
+      {clusterBg === 'none' && currentStyle.texture && (
         <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: currentStyle.texture }}></div>
       )}
 
       {/* Warning Lights Cluster */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 flex space-x-6 z-40 bg-black/40 px-6 py-1 rounded-full border border-white/5 backdrop-blur-sm">
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 flex space-x-6 z-40 bg-black/40 px-6 py-1 rounded-full border border-white/5 backdrop-blur-sm shadow-lg">
          {/* Check Engine */}
          <WarningIcon 
             active={showBulbCheck} 
             color="text-yellow-500" 
-            path="M3 3v18h18V3H3zm9 15c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm4.5-8h-9V8h9v2z" // Simplified Engine Block
+            path="M3 3v18h18V3H3zm9 15c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3-3 3zm4.5-8h-9V8h9v2z" // Simplified Engine Block
          />
          {/* Battery */}
          <WarningIcon 
@@ -239,12 +282,12 @@ const Dashboard: React.FC<DashboardProps> = ({ state, theme, onToggleTheme }) =>
           {/* Center Info */}
           <div className="text-center z-20 mt-8">
             <div className={`text-6xl ${currentStyle.font} font-bold text-white tracking-tighter shadow-black drop-shadow-md`}>
-              {state.gear === 0 ? 'N' : state.gear === -1 ? 'R' : state.gear}
+              {gearDisplay}
             </div>
             
             {/* Auto/Manual Indicator */}
-            <div className={`text-[10px] uppercase font-bold tracking-widest mt-1 ${state.isAutomatic ? 'text-blue-400' : 'text-gray-500'}`}>
-                {state.isAutomatic ? 'AUTO D' : 'MANUAL'}
+            <div className={`text-[10px] uppercase font-bold tracking-widest mt-1 ${state.transmissionMode !== 'MT' ? 'text-blue-400' : 'text-gray-500'}`}>
+                {state.transmissionMode !== 'MT' ? `${state.transmissionMode} D` : 'MANUAL'}
             </div>
              
              {/* Numeric RPM */}
@@ -322,7 +365,7 @@ const Dashboard: React.FC<DashboardProps> = ({ state, theme, onToggleTheme }) =>
                  }`}>
                     {/* Car Icon with Lines */}
                     <svg viewBox="0 0 24 24" className="w-6 h-6 fill-current">
-                       <path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.85 7h10.29l1.08 3.11H5.77L6.85 7zM19 17H5v-5h14v5z"/>
+                       <path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.85 7h10.29l1.08 3.11H5.77L6.85 7zM19 17H5v-5h14v5z"/>
                        {/* Lines */}
                        <path d="M1 17h2v2H1zm0-4h2v2H1zm0-4h2v2H1zm20 8h2v2h-2zm0-4h2v2h-2zm0-4h2v2h-2z"/> 
                     </svg>
